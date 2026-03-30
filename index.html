@@ -5,143 +5,91 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chirp 🐦</title>
 <link href="https://fonts.googleapis.com" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net"></script>
+<!-- Updated Supabase Loader -->
+<script src="https://unpkg.com"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg:#0a0f1e; --bg2:#111827; --border:#1e2d45;
-    --accent:#1d9bf0; --text1:#e7ecf0; --text2:#8899aa;
-  }
-  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text1); overflow-x: hidden; }
+  :root { --bg:#0a0f1e; --bg2:#111827; --border:#1e2d45; --accent:#1d9bf0; --text1:#e7ecf0; --text2:#8899aa; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text1); height: 100vh; display: flex; align-items: center; justify-content: center; }
 
-  #loading-overlay { position:fixed; inset:0; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:9999; gap: 15px; }
+  /* LOADING OVERLAY */
+  #loading-overlay { position:fixed; inset:0; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:9999; }
   .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  #auth-screen { position:fixed; inset:0; background:var(--bg); display:none; align-items:center; justify-content:center; z-index:9000; }
-  .auth-card { background:var(--bg2); border:1px solid var(--border); padding:40px; border-radius:16px; width:100%; max-width:400px; display:flex; flex-direction:column; gap:15px; }
+  /* AUTH SCREEN */
+  #auth-screen { background:var(--bg2); border:1px solid var(--border); padding:40px; border-radius:16px; width:100%; max-width:400px; display:none; flex-direction:column; gap:15px; z-index: 9000; }
   .auth-input { background:#1a2236; border:1px solid var(--border); padding:12px; border-radius:8px; color:#fff; outline:none; width: 100%; }
   .auth-btn { background:var(--accent); border:none; color:#fff; padding:12px; border-radius:99px; font-weight:700; cursor:pointer; width: 100%; }
 
-  .app { display:none; height:100vh; width: 100%; }
+  /* APP LAYOUT */
+  .app { display:none; height:100vh; width: 100%; position: absolute; inset: 0; }
   .sidebar { width:240px; border-right:1px solid var(--border); padding:20px; display:flex; flex-direction:column; gap:20px; }
-  .feed { flex:1; overflow-y:auto; border-right:1px solid var(--border); }
-  .header { position:sticky; top:0; background:rgba(10,15,30,0.8); backdrop-filter:blur(10px); padding:15px; border-bottom:1px solid var(--border); font-weight:800; font-size:20px; }
-  
-  .composer { padding:15px; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:10px; }
-  textarea { background:transparent; border:none; color:white; font-size:18px; resize:none; outline:none; font-family:inherit; width: 100%; }
-  
+  .feed { flex:1; overflow-y:auto; }
+  .header { padding:15px; border-bottom:1px solid var(--border); font-weight:800; font-size:20px; }
   .post { padding:15px; border-bottom:1px solid var(--border); }
-  .post-user { font-weight:800; font-size:14px; color: var(--accent); }
-  .post-content { color:var(--text1); margin-top: 5px; }
 </style>
 </head>
 <body>
 
   <div id="loading-overlay">
     <div class="spinner"></div>
-    <p>Chirping...</p>
+    <p style="margin-top:10px">Chirping...</p>
   </div>
 
   <div id="auth-screen">
-    <div class="auth-card">
-      <h1 style="text-align:center; margin-bottom: 10px;">Chirp 🐦</h1>
-      <input type="email" id="email" class="auth-input" placeholder="Email">
-      <input type="password" id="password" class="auth-input" placeholder="Password">
-      <button class="auth-btn" onclick="handleAuth('login')">Log In</button>
-      <button class="auth-btn" style="background:transparent; border:1px solid var(--border)" onclick="handleAuth('signup')">Sign Up</button>
-      <p style="font-size: 11px; color: var(--text2); text-align: center;">Make sure email confirmation is OFF in Supabase settings!</p>
-    </div>
+    <h1 style="text-align:center; margin-bottom: 10px;">Chirp 🐦</h1>
+    <input type="email" id="email" class="auth-input" placeholder="Email">
+    <input type="password" id="password" class="auth-input" placeholder="Password">
+    <button class="auth-btn" onclick="handleAuth('login')">Log In</button>
+    <button class="auth-btn" style="background:transparent; border:1px solid var(--border)" onclick="handleAuth('signup')">Sign Up</button>
   </div>
 
   <div class="app" id="main-app">
-    <div class="sidebar">
-      <h2>🐦 Chirp</h2>
-      <button class="auth-btn" style="background: #f4212e" onclick="signOut()">Log Out</button>
-    </div>
-    <div class="feed">
-      <div class="header">Home</div>
-      <div class="composer">
-        <textarea id="post-input" placeholder="What's happening?" rows="3"></textarea>
-        <button class="auth-btn" onclick="postChirp()" style="width:100px; align-self:flex-end">Chirp</button>
-      </div>
-      <div id="posts-container"></div>
-    </div>
+    <div class="sidebar"><h2>🐦 Chirp</h2><button class="auth-btn" onclick="signOut()">Log Out</button></div>
+    <div class="feed"><div class="header">Home</div><div id="posts-container"></div></div>
   </div>
 
 <script>
-  // --- CONFIGURATION ---
   const SUPABASE_URL = 'https://qmowaafvelxzidyvtxqm.supabase.co'; 
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtb3dhYWZ2ZWx4emlkeXZ0eHFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NzUzOTUsImV4cCI6MjA5MDQ1MTM5NX0.FCUMc0MrfMpTfKQ8iHxcneyc6u1TdeJIXKXvJ2BXqoM'; 
 
-  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-  // Fail-safe to hide loader after 2s
-  setTimeout(() => {
-    const loader = document.getElementById('loading-overlay');
-    if (loader.style.display !== 'none') {
-      loader.style.display = 'none';
-      document.getElementById('auth-screen').style.display = 'flex';
-    }
-  }, 2000);
-
-  // Monitor login status
-  supabase.auth.onAuthStateChange((event, session) => {
+  // Check if library loaded
+  if (typeof supabase === 'undefined') {
+    alert("Supabase failed to load. Check your internet or CDN link.");
     document.getElementById('loading-overlay').style.display = 'none';
-    if (session) {
-      document.getElementById('auth-screen').style.display = 'none';
-      document.getElementById('main-app').style.display = 'flex';
-      fetchPosts();
-    } else {
-      document.getElementById('auth-screen').style.display = 'flex';
-      document.getElementById('main-app').style.display = 'none';
+  } else {
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // FORCE HIDE LOADER
+    setTimeout(() => {
+      document.getElementById('loading-overlay').style.display = 'none';
+      client.auth.getSession().then(({data}) => {
+        if (!data.session) document.getElementById('auth-screen').style.display = 'flex';
+      });
+    }, 1000);
+
+    client.auth.onAuthStateChange((event, session) => {
+      document.getElementById('loading-overlay').style.display = 'none';
+      if (session) {
+        document.getElementById('auth-screen').style.display = 'none';
+        document.getElementById('main-app').style.display = 'flex';
+      } else {
+        document.getElementById('auth-screen').style.display = 'flex';
+        document.getElementById('main-app').style.display = 'none';
+      }
+    });
+
+    async function handleAuth(type) {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      const { error } = type === 'login' 
+        ? await client.auth.signInWithPassword({ email, password })
+        : await client.auth.signUp({ email, password });
+      if (error) alert(error.message);
     }
-  });
 
-  async function handleAuth(type) {
-    const email = document.getElementById('email').value;
-    const password = document.getElementById('password').value;
-    if (!email || !password) return alert("Enter email and password");
-
-    const { error } = type === 'login' 
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password });
-
-    if (error) alert("Error: " + error.message);
-  }
-
-  async function signOut() { await supabase.auth.signOut(); }
-
-  async function postChirp() {
-    const content = document.getElementById('post-input').value;
-    const user = (await supabase.auth.getUser()).data.user;
-    if (!content) return;
-
-    const { error } = await supabase
-      .from('posts')
-      .insert([{ content, user_email: user.email }]);
-
-    if (error) alert("Table Error: Run the SQL setup in Supabase dashboard first!");
-    else {
-      document.getElementById('post-input').value = '';
-      fetchPosts();
-    }
-  }
-
-  async function fetchPosts() {
-    const { data: posts, error } = await supabase
-      .from('posts')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (!error && posts) {
-      document.getElementById('posts-container').innerHTML = posts.map(post => `
-        <div class="post">
-          <div class="post-user">${post.user_email}</div>
-          <div class="post-content">${post.content}</div>
-        </div>
-      `).join('');
-    }
+    async function signOut() { await client.auth.signOut(); }
   }
 </script>
 </body>
