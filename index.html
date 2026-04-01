@@ -1,0 +1,1429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chirp 🐦</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import { getFirestore, collection, addDoc, getDocs, query, orderBy, onSnapshot, serverTimestamp, doc, updateDoc, arrayUnion, arrayRemove, getDoc, setDoc, where, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDmm0DsJNr0MShXORcDw5zmENfTwOq0n34",
+      authDomain: "chirp-2-3797f.firebaseapp.com",
+      projectId: "chirp-2-3797f",
+      storageBucket: "chirp-2-3797f.firebasestorage.app",
+      messagingSenderId: "6464723709",
+      appId: "1:6464723709:web:bc0cb524e53f0b2e427c94"
+    };
+
+    // Paste your admin UID here
+    const ADMIN_UID = "bnvoAlW0jkcyI5GwYTmF0BgdSCa2";
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    let currentUser = null;
+    let unsubFeed   = null;
+    let unsubDMs    = null;
+    let isAdmin     = false;
+    let activeDMUid = null;
+
+    const $    = id => document.getElementById(id);
+    const show = id => $(id) && $(id).classList.remove('hidden');
+    const hide = id => $(id) && $(id).classList.add('hidden');
+    const mk   = (tag,cls) => { const e=document.createElement(tag); if(cls) e.className=cls; return e; };
+    const esc  = t => String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const ago  = d => { const s=Math.floor((Date.now()-d)/1000); if(s<60)return s+'s'; if(s<3600)return Math.floor(s/60)+'m'; if(s<86400)return Math.floor(s/3600)+'h'; return Math.floor(s/86400)+'d'; };
+    const dbn  = (fn,ms) => { let t; return (...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);}; };
+    const avatarColor = uid => ['#f5a623','#7b61ff','#ff6b6b','#4ecdc4','#45b7d1','#f9ca24','#6ab04c'][(uid||'a').charCodeAt(0)%7];
+
+    // Convert file to base64 for storing in Firestore (images stored as base64 strings)
+    const toBase64 = file => new Promise((res,rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = rej;
+      r.readAsDataURL(file);
+    });
+
+    // ══════════════════════════════════════════
+    //  AUTH STATE
+    // ══════════════════════════════════════════
+    onAuthStateChanged(auth, async user => {
+      if (user) {
+        currentUser = user;
+        isAdmin = user.uid === ADMIN_UID;
+        try {
+          const snap = await getDoc(doc(db,'users',user.uid));
+          if (snap.exists()) {
+            const d = snap.data();
+            currentUser.chirpHandle  = d.handle || '';
+            currentUser.handle       = d.handle || '';
+            currentUser.chirpName    = d.displayName || user.displayName || '';
+            currentUser.bio          = d.bio || '';
+            currentUser.avatar       = d.avatar || avatarColor(user.uid);
+            currentUser.profilePic   = d.profilePic || null;
+          }
+        } catch(e) { console.warn('Profile load error:', e.message); }
+        const accepted = localStorage.getItem('chirp_coc_' + user.uid);
+        accepted ? renderApp() : renderCoC();
+      } else {
+        currentUser = null; isAdmin = false;
+        renderAuth();
+      }
+    });
+
+    // ══════════════════════════════════════════
+    //  CODE OF CONDUCT
+    // ══════════════════════════════════════════
+    function cocHTML() {
+      const rules = [
+        ['🤝','Be Respectful','Treat every member with dignity. Harassment, bullying, and hate speech are strictly prohibited.'],
+        ['🚫','No Hate Speech','Content promoting hatred based on race, religion, gender, or sexuality is not permitted.'],
+        ['🔒','Protect Privacy','Do not share personal information about others without consent.'],
+        ['✅','Share Truthfully','Do not spread misinformation or impersonate others.'],
+        ['🛡️','No Illegal Content','Do not post anything that violates applicable laws.'],
+        ['🔔','No Spam','Keep your chirps genuine and meaningful.'],
+        ['⚖️','Admin Enforcement','Admins may remove any content or account. Repeat violations may result in a ban.'],
+        ['💬','Report, Don\'t Retaliate','If you see a violation, report it rather than escalating.'],
+      ];
+      return rules.map(([ic,t,b],i)=>`<div class="coc-rule"><div class="coc-rule-icon">${ic}</div><div><h3>${i+1}. ${t}</h3><p>${b}</p></div></div>`).join('');
+    }
+
+    function renderCoC() {
+      $('app').innerHTML = `<div class="coc-screen"><div class="coc-card">
+        <div class="coc-header"><span style="font-size:2.5rem;display:block;margin-bottom:.5rem">🐦</span>
+          <h1>Chirp Code of Conduct</h1><p>Read and agree before you start chirping.</p></div>
+        <div class="coc-body">${cocHTML()}</div>
+        <div class="coc-footer">
+          <label class="coc-checkbox"><input type="checkbox" id="cocCheck"/><span>I have read and agree to the Chirp Code of Conduct</span></label>
+          <button class="btn btn-primary" id="cocAcceptBtn" disabled>Enter Chirp ✦</button>
+        </div></div></div>`;
+      $('cocCheck').onchange = () => { $('cocAcceptBtn').disabled = !$('cocCheck').checked; };
+      $('cocAcceptBtn').onclick = () => { localStorage.setItem('chirp_coc_'+currentUser.uid,'1'); renderApp(); };
+    }
+
+    // ══════════════════════════════════════════
+    //  AUTH
+    // ══════════════════════════════════════════
+    function renderAuth() {
+      $('app').innerHTML = `<div class="auth-screen">
+        <div class="auth-brand"><span style="font-size:3rem">🐦</span>
+          <h1 class="brand-title">Chirp</h1><p class="brand-sub">What's happening in your world?</p></div>
+        <div class="auth-card" id="loginCard">
+          <h2>Sign in</h2>
+          <input id="loginEmail" type="email" placeholder="Email" class="input"/>
+          <input id="loginPass" type="password" placeholder="Password" class="input"/>
+          <button class="btn btn-primary" id="loginBtn">Sign In</button>
+          <p class="auth-switch">No account? <a href="#" id="toRegister">Join Chirp</a></p>
+          <p class="auth-error hidden" id="loginErr"></p>
+        </div>
+        <div class="auth-card hidden" id="registerCard">
+          <h2>Join Chirp</h2>
+          <input id="regName"   type="text"     placeholder="Your name"           class="input"/>
+          <input id="regHandle" type="text"     placeholder="@handle (no spaces)" class="input"/>
+          <input id="regEmail"  type="email"    placeholder="Email"               class="input"/>
+          <input id="regPass"   type="password" placeholder="Password (6+ chars)" class="input"/>
+          <button class="btn btn-primary" id="registerBtn">Create Account</button>
+          <p class="auth-switch">Have an account? <a href="#" id="toLogin">Sign in</a></p>
+          <p class="auth-error hidden" id="regErr"></p>
+        </div></div>`;
+
+      $('toRegister').onclick = e=>{e.preventDefault();hide('loginCard');show('registerCard');};
+      $('toLogin').onclick    = e=>{e.preventDefault();hide('registerCard');show('loginCard');};
+
+      $('loginBtn').onclick = async()=>{
+        const email=$('loginEmail').value.trim(),pass=$('loginPass').value;
+        try{$('loginBtn').textContent='Signing in...';await signInWithEmailAndPassword(auth,email,pass);}
+        catch(e){showAuthErr('loginErr',fErr(e.code));$('loginBtn').textContent='Sign In';}
+      };
+
+      $('registerBtn').onclick = async()=>{
+        const name=$('regName').value.trim();
+        const handle=$('regHandle').value.trim().replace(/\s/g,'').replace('@','');
+        const email=$('regEmail').value.trim();
+        const pass=$('regPass').value;
+        if(!name||!handle) return showAuthErr('regErr','Name and handle are required.');
+        if(handle.length<2) return showAuthErr('regErr','Handle must be at least 2 chars.');
+        try{
+          $('registerBtn').textContent='Creating...';
+          const cred=await createUserWithEmailAndPassword(auth,email,pass);
+          await updateProfile(cred.user,{displayName:name});
+          await setDoc(doc(db,'users',cred.user.uid),{
+            displayName:name,handle,email,bio:'',
+            avatar:avatarColor(cred.user.uid),profilePic:null,
+            followers:[],following:[],createdAt:serverTimestamp()
+          });
+        } catch(e){showAuthErr('regErr',fErr(e.code));$('registerBtn').textContent='Create Account';}
+      };
+    }
+
+    function showAuthErr(id,msg){const el=$(id);if(el){el.textContent=msg;el.classList.remove('hidden');}}
+    function fErr(c){return({'auth/email-already-in-use':'That email is already registered.','auth/invalid-email':'Invalid email.','auth/weak-password':'Password must be 6+ characters.','auth/user-not-found':'No account with that email.','auth/wrong-password':'Incorrect password.','auth/invalid-credential':'Invalid email or password.'})[c]||'Something went wrong. Try again.';}
+
+    // ══════════════════════════════════════════
+    //  AVATAR ELEMENT HELPER
+    // ══════════════════════════════════════════
+    function setAvatar(el, user) {
+      if (!el) return;
+      if (user.profilePic) {
+        el.style.background = 'none';
+        el.style.backgroundImage = `url('${user.profilePic}')`;
+        el.style.backgroundSize = 'cover';
+        el.style.backgroundPosition = 'center';
+        el.textContent = '';
+      } else {
+        el.style.background = user.avatar || avatarColor(user.uid||'');
+        el.style.backgroundImage = '';
+        el.textContent = (user.chirpName||user.displayName||'?')[0].toUpperCase();
+      }
+    }
+
+    function avatarEl(size, user) {
+      const el = mk('div', `avatar-${size}`);
+      setAvatar(el, user);
+      return el;
+    }
+
+    // ══════════════════════════════════════════
+    //  MAIN APP SHELL
+    // ══════════════════════════════════════════
+    function renderApp() {
+      const crown = isAdmin ? '<span class="admin-crown">👑</span>' : '';
+      $('app').innerHTML = `<div class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-logo">🐦 <span>Chirp</span></div>
+          <nav class="sidebar-nav">
+            <a class="nav-item active" data-view="feed" href="#">
+              <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span>Home</span></a>
+            <a class="nav-item" data-view="explore" href="#">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Explore</span></a>
+            <a class="nav-item" data-view="messages" href="#">
+              <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Messages</span></a>
+            <a class="nav-item" data-view="profile" href="#">
+              <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></a>
+            <a class="nav-item" data-view="coc" href="#">
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>Rules</span></a>
+            ${isAdmin?`<a class="nav-item nav-admin" data-view="admin" href="#">
+              <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span>Admin</span></a>`:''}
+          </nav>
+          <button class="btn btn-primary chirp-btn" id="openCompose">&#10022; Chirp</button>
+          <div class="sidebar-user" id="sidebarUser">
+            <div class="avatar-sm" id="sidebarAvatar"></div>
+            <div style="min-width:0;flex:1;overflow:hidden">
+              <div class="user-name">${crown}${currentUser.chirpName||currentUser.displayName||''}</div>
+              <div class="user-handle">@${currentUser.chirpHandle||'you'}</div>
+            </div>
+            <button class="signout-btn" id="signoutBtn" title="Sign out">
+              <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
+          </div>
+        </aside>
+        <main class="main">
+          <div class="top-bar"><h2 id="viewTitle">Home</h2></div>
+          <div id="statusBanner" class="status-banner hidden"></div>
+          <div id="viewContainer"></div>
+        </main>
+        <div class="right-panel">
+          <div class="search-box">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="searchInput" type="text" placeholder="Search Chirp"/>
+          </div>
+          <div class="trending-card"><h3>Trending</h3><div id="trendingList"><div class="loading-pulse">Loading...</div></div></div>
+          <div class="tags-card" id="tagsCard"><h3>Tags</h3><div id="tagsList"><div class="loading-pulse">Loading...</div></div></div>
+        </div>
+      </div>
+
+      <!-- Compose Modal -->
+      <div class="modal-overlay hidden" id="composeModal">
+        <div class="modal">
+          <button class="modal-close" id="closeCompose">&#x2715;</button>
+          <div class="compose-area">
+            <div class="avatar-md" id="composeAvatar"></div>
+            <div class="compose-right">
+              <textarea id="chirpText" placeholder="What's chirping?" maxlength="280"></textarea>
+              <div id="imagePreviewWrap" class="hidden">
+                <img id="imagePreview" style="max-width:100%;border-radius:10px;margin-top:.5rem"/>
+                <button id="removeImageBtn" class="remove-img-btn">&#x2715; Remove</button>
+              </div>
+              <div id="adminComposeExtras" class="${isAdmin?'':'hidden'}">
+                <div class="admin-compose-label">👑 Admin options</div>
+                <div class="admin-compose-row"><label>Override display name</label>
+                  <input id="adminPostAs" class="input input-sm" placeholder="Leave blank to post as yourself"/></div>
+                <div class="admin-compose-row"><label>Override @handle</label>
+                  <input id="adminPostHandle" class="input input-sm" placeholder="Leave blank to post as yourself"/></div>
+                <div class="admin-compose-row">
+                  <label class="coc-checkbox"><input type="checkbox" id="adminPinChirp"/><span>Pin this chirp</span></label>
+                </div>
+              </div>
+              <div class="compose-footer">
+                <label class="img-upload-btn" title="Add image">
+                  <svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                  <input type="file" id="chirpImageInput" accept="image/*" style="display:none"/>
+                </label>
+                <span class="char-count" id="charCount">280</span>
+                <button class="btn btn-primary" id="postBtn">Chirp</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+      setAvatar($('sidebarAvatar'), currentUser);
+      setAvatar($('composeAvatar'), currentUser);
+
+      document.querySelectorAll('.nav-item').forEach(a=>{
+        a.onclick = e=>{
+          e.preventDefault();
+          document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
+          a.classList.add('active');
+          switchView(a.dataset.view);
+        };
+      });
+
+      $('openCompose').onclick  = ()=>{show('composeModal');$('chirpText').focus();};
+      $('closeCompose').onclick = ()=>{hide('composeModal');clearCompose();};
+      $('composeModal').onclick = e=>{if(e.target.id==='composeModal'){hide('composeModal');clearCompose();}};
+      $('chirpText').oninput    = ()=>{
+        const left=280-$('chirpText').value.length;
+        $('charCount').textContent=left;
+        $('charCount').style.color=left<20?'#ff6b6b':'var(--muted)';
+      };
+      $('postBtn').onclick    = postChirp;
+      $('signoutBtn').onclick = ()=>signOut(auth);
+      $('searchInput').oninput = dbn(handleSearch,400);
+
+      // Image upload in compose
+      $('chirpImageInput').onchange = async e=>{
+        const file = e.target.files[0]; if(!file) return;
+        if(file.size > 2*1024*1024){alert('Image must be under 2MB.');return;}
+        const b64 = await toBase64(file);
+        $('imagePreview').src = b64;
+        show('imagePreviewWrap');
+      };
+      $('removeImageBtn').onclick = ()=>{clearImagePreview();};
+
+      loadTrending();
+      loadTags();
+      loadStatusBanner();
+      switchView('feed');
+    }
+
+    function clearCompose(){
+      if($('chirpText'))$('chirpText').value='';
+      if($('charCount'))$('charCount').textContent='280';
+      clearImagePreview();
+    }
+    function clearImagePreview(){
+      if($('imagePreview'))$('imagePreview').src='';
+      if($('chirpImageInput'))$('chirpImageInput').value='';
+      if($('imagePreviewWrap'))hide('imagePreviewWrap');
+    }
+
+    // ══════════════════════════════════════════
+    //  STATUS BANNER
+    // ══════════════════════════════════════════
+    async function loadStatusBanner(){
+      try{const s=await getDoc(doc(db,'config','status'));if(s.exists()){const d=s.data();if(d.active&&d.message)paintBanner(d.message,d.type);}}catch(e){}
+    }
+    function paintBanner(message,type='info'){
+      const b=$('statusBanner');if(!b)return;
+      const icons={info:'ℹ️',warning:'⚠️',success:'✅',error:'🚨'};
+      b.className='status-banner status-'+type;
+      b.innerHTML=`<span class="sb-icon">${icons[type]||'ℹ️'}</span><span class="sb-msg">${esc(message)}</span>${isAdmin?'<button class="sb-edit" id="editStatusBtn">Edit</button>':''}`;
+      b.classList.remove('hidden');
+      if(isAdmin&&$('editStatusBtn'))$('editStatusBtn').onclick=openStatusEditor;
+    }
+    function openStatusEditor(){
+      const old=document.querySelector('.status-editor-modal');if(old)old.remove();
+      const modal=mk('div','modal-overlay status-editor-modal');
+      modal.innerHTML=`<div class="modal" style="max-width:480px">
+        <button class="modal-close" id="closeStatusModal">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1.25rem">📢 Site Status Banner</h3>
+        <textarea id="statusMsg" class="input" style="height:80px;resize:vertical;border-radius:10px" placeholder="e.g. Maintenance tonight at 10 PM UTC..."></textarea>
+        <div style="margin:.9rem 0">
+          <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.08em;font-weight:600">Type</label>
+          <div class="stype-row">
+            <button class="stype-btn active" data-t="info">ℹ️ Info</button>
+            <button class="stype-btn" data-t="warning">⚠️ Warning</button>
+            <button class="stype-btn" data-t="success">✅ Good News</button>
+            <button class="stype-btn" data-t="error">🚨 Alert</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:.75rem;margin-top:1.25rem">
+          <button class="btn btn-primary" id="saveStatusBtn" style="flex:1">Save &amp; Publish</button>
+          <button class="btn btn-danger" id="clearStatusBtn">Clear</button>
+        </div></div>`;
+      document.body.appendChild(modal);
+      let selType='info';
+      modal.querySelectorAll('.stype-btn').forEach(b=>{b.onclick=()=>{modal.querySelectorAll('.stype-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');selType=b.dataset.t;};});
+      modal.querySelector('#closeStatusModal').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+      modal.querySelector('#saveStatusBtn').onclick=async()=>{
+        const msg=modal.querySelector('#statusMsg').value.trim();if(!msg)return;
+        await setDoc(doc(db,'config','status'),{message:msg,type:selType,active:true,updatedAt:serverTimestamp(),updatedBy:currentUser.uid});
+        paintBanner(msg,selType);modal.remove();
+      };
+      modal.querySelector('#clearStatusBtn').onclick=async()=>{
+        await setDoc(doc(db,'config','status'),{active:false,message:'',type:'info'});
+        const b=$('statusBanner');if(b)b.classList.add('hidden');modal.remove();
+      };
+    }
+
+    // ══════════════════════════════════════════
+    //  TAGS (admin-only management, everyone sees)
+    // ══════════════════════════════════════════
+    async function loadTags(){
+      try{
+        const snap=await getDoc(doc(db,'config','tags'));
+        const tl=$('tagsList');if(!tl)return;
+        const tags=(snap.exists()&&snap.data().list)||[];
+        renderTagsList(tags);
+      }catch(e){}
+    }
+    function renderTagsList(tags){
+      const tl=$('tagsList');if(!tl)return;
+      if(!tags.length){tl.innerHTML='<p style="padding:.5rem;color:var(--muted);font-size:.85rem">No tags yet.</p>';return;}
+      tl.innerHTML=tags.map(t=>`<button class="tag-pill" data-tag="${esc(t)}">#${esc(t)}</button>`).join('');
+      tl.querySelectorAll('.tag-pill').forEach(btn=>{
+        btn.onclick=()=>searchByTag(btn.dataset.tag);
+      });
+      if(isAdmin){
+        const editBtn=mk('button','btn btn-outline btn-sm');
+        editBtn.style.cssText='width:100%;margin-top:.75rem;font-size:.8rem';
+        editBtn.textContent='👑 Manage Tags';
+        editBtn.onclick=openTagsEditor;
+        tl.appendChild(editBtn);
+      }
+    }
+    function searchByTag(tag){
+      document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
+      $('viewTitle').textContent='#'+tag;
+      if(unsubFeed){unsubFeed();unsubFeed=null;}
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Searching...</div>';
+      const q=query(collection(db,'chirps'),orderBy('createdAt','desc'),limit(100));
+      getDocs(q).then(snap=>{
+        const results=[];
+        snap.forEach(d=>{if((d.data().text||'').toLowerCase().includes('#'+tag.toLowerCase()))results.push({id:d.id,...d.data()});});
+        c.innerHTML=`<h3 class="section-label">#${esc(tag)}</h3>`;
+        if(!results.length){c.innerHTML+='<p class="empty-state">No chirps with #'+esc(tag)+'</p>';return;}
+        results.forEach(r=>c.appendChild(chirpCard(r)));
+      });
+    }
+    function openTagsEditor(){
+      const modal=mk('div','modal-overlay');
+      modal.innerHTML=`<div class="modal" style="max-width:440px">
+        <button class="modal-close" id="closeTagsModal">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1rem">👑 Manage Tags</h3>
+        <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">These tags appear in the sidebar for all users. Only the admin can add or remove them.</p>
+        <div id="tagEditorList" style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem"></div>
+        <div style="display:flex;gap:.5rem">
+          <input id="newTagInput" class="input" placeholder="Add a tag (no #)" style="flex:1"/>
+          <button class="btn btn-primary btn-sm" id="addTagBtn">Add</button>
+        </div>
+        <button class="btn btn-primary" style="width:100%;margin-top:1rem" id="saveTagsBtn">Save Tags</button>
+      </div>`;
+      document.body.appendChild(modal);
+      let currentTags=[];
+      getDoc(doc(db,'config','tags')).then(snap=>{
+        currentTags=(snap.exists()&&snap.data().list)||[];
+        renderTagEditor();
+      });
+      function renderTagEditor(){
+        const list=modal.querySelector('#tagEditorList');
+        list.innerHTML=currentTags.map((t,i)=>`<span class="tag-editor-pill">#${esc(t)}<button data-i="${i}" class="tag-remove-btn">&#x2715;</button></span>`).join('');
+        list.querySelectorAll('.tag-remove-btn').forEach(b=>{b.onclick=()=>{currentTags.splice(Number(b.dataset.i),1);renderTagEditor();};});
+      }
+      modal.querySelector('#addTagBtn').onclick=()=>{
+        const val=modal.querySelector('#newTagInput').value.trim().replace(/^#/,'').replace(/\s/g,'');
+        if(val&&!currentTags.includes(val)){currentTags.push(val);renderTagEditor();modal.querySelector('#newTagInput').value='';}
+      };
+      modal.querySelector('#newTagInput').onkeydown=e=>{if(e.key==='Enter')modal.querySelector('#addTagBtn').click();};
+      modal.querySelector('#saveTagsBtn').onclick=async()=>{
+        await setDoc(doc(db,'config','tags'),{list:currentTags,updatedAt:serverTimestamp()});
+        renderTagsList(currentTags);modal.remove();
+      };
+      modal.querySelector('#closeTagsModal').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+    }
+
+    // ══════════════════════════════════════════
+    //  TRENDING (fixed — pulls real hashtags + top words)
+    // ══════════════════════════════════════════
+    async function loadTrending(){
+      try{
+        const snap=await getDocs(query(collection(db,'chirps'),orderBy('createdAt','desc'),limit(200)));
+        const hashCount={},wordCount={};
+        const stop=new Set(['the','a','an','and','or','is','in','on','at','to','it','of','for','with','that','this','was','are','i','you','he','she','we','they','be','have','do','not','my','your','its','as','but','if','from','so','what','how','get','can','will','just','about','up','out','who','im','its','dont','cant']);
+        snap.forEach(d=>{
+          const text=d.data().text||'';
+          // Extract hashtags
+          const tags=text.match(/#[a-zA-Z]\w*/g)||[];
+          tags.forEach(t=>{const k=t.toLowerCase();hashCount[k]=(hashCount[k]||0)+1;});
+          // Extract words
+          text.split(/\s+/).forEach(w=>{
+            const c=w.toLowerCase().replace(/[^a-z]/g,'');
+            if(c.length>3&&!stop.has(c)&&!c.startsWith('#'))wordCount[c]=(wordCount[c]||0)+1;
+          });
+        });
+        const topHash=Object.entries(hashCount).sort((a,b)=>b[1]-a[1]).slice(0,4);
+        const topWord=Object.entries(wordCount).sort((a,b)=>b[1]-a[1]).slice(0,4);
+        const tl=$('trendingList');if(!tl)return;
+        if(!topHash.length&&!topWord.length){tl.innerHTML='<p style="padding:.75rem;color:var(--muted);font-size:.875rem">Post some chirps to see trends!</p>';return;}
+        let html='';
+        if(topHash.length){html+=topHash.map(([w,c])=>`<div class="trend-item clickable-trend" data-tag="${w.slice(1)}"><span class="trend-word">${w}</span><span class="trend-count">${c} chirps</span></div>`).join('');}
+        if(topWord.length&&!topHash.length){html+=topWord.map(([w,c])=>`<div class="trend-item"><span class="trend-word">${w}</span><span class="trend-count">${c} mentions</span></div>`).join('');}
+        tl.innerHTML=html;
+        tl.querySelectorAll('.clickable-trend').forEach(el=>{
+          el.onclick=()=>searchByTag(el.dataset.tag);
+        });
+      }catch(e){const tl=$('trendingList');if(tl)tl.innerHTML='<p style="padding:.75rem;color:var(--muted);font-size:.85rem">Could not load trends.</p>';}
+    }
+
+    // ══════════════════════════════════════════
+    //  VIEWS
+    // ══════════════════════════════════════════
+    function switchView(view){
+      if(unsubFeed){unsubFeed();unsubFeed=null;}
+      if(unsubDMs){unsubDMs();unsubDMs=null;}
+      activeDMUid=null;
+      const titles={feed:'Home',explore:'Explore',messages:'Messages',profile:'Profile',coc:'Community Rules',admin:'Admin Panel'};
+      $('viewTitle').textContent=titles[view]||'Home';
+      if(view==='feed')     loadFeed();
+      if(view==='explore')  loadExplore();
+      if(view==='messages') loadMessages();
+      if(view==='profile')  loadProfile(currentUser.uid);
+      if(view==='coc')      loadCoCView();
+      if(view==='admin'&&isAdmin) loadAdminPanel();
+    }
+
+    // ── FEED ──
+    function loadFeed(){
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Loading chirps...</div>';
+      const q=query(collection(db,'chirps'),orderBy('createdAt','desc'),limit(50));
+      unsubFeed=onSnapshot(q,snap=>{
+        c.innerHTML='';
+        if(snap.empty){c.innerHTML='<p class="empty-state">No chirps yet. Be the first!</p>';return;}
+        const arr=[];
+        snap.forEach(d=>arr.push({id:d.id,...d.data()}));
+        if(!arr.length){c.innerHTML='<p class="empty-state">No chirps yet. Be the first!</p>';return;}
+        arr.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||((b.createdAt?.seconds||0)-(a.createdAt?.seconds||0)));
+        arr.forEach(d=>c.appendChild(chirpCard(d)));
+      },err=>{c.innerHTML='<p class="empty-state">Error loading feed: '+err.message+'</p>';});
+    }
+
+    // ── EXPLORE ──
+    async function loadExplore(){
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Finding people...</div>';
+      try{
+        const snap=await getDocs(collection(db,'users'));
+        const others=[];
+        snap.forEach(d=>{if(d.id!==currentUser.uid)others.push({id:d.id,...d.data()});});
+        c.innerHTML='<h3 class="section-label">People to follow</h3>';
+        if(!others.length){c.innerHTML+='<p class="empty-state">No other users yet!</p>';return;}
+        others.forEach(u=>c.appendChild(userCard(u)));
+      }catch(e){c.innerHTML='<p class="empty-state">Error: '+e.message+'</p>';}
+    }
+
+    // ── MESSAGES ──
+    async function loadMessages(){
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Loading messages...</div>';
+      try{
+        const mySnap=await getDoc(doc(db,'users',currentUser.uid));
+        const following=mySnap.exists()?(mySnap.data().following||[]):[];
+        if(!following.length){c.innerHTML='<div class="dm-empty"><p>Follow people to message them!</p></div>';return;}
+        const contacts=[];
+        for(const uid of following){
+          const s=await getDoc(doc(db,'users',uid));
+          if(s.exists()) contacts.push({id:uid,...s.data()});
+        }
+        if(!contacts.length){c.innerHTML='<div class="dm-empty"><p>Could not load contacts.</p></div>';return;}
+        renderDMInbox(c,contacts);
+      }catch(e){c.innerHTML='<p class="empty-state">Error: '+e.message+'</p>';}
+    }
+
+    function renderDMInbox(c,contacts){
+      c.innerHTML='<div class="dm-layout"><div class="dm-sidebar" id="dmSidebar"><h3 class="dm-sidebar-title">Messages</h3></div><div class="dm-main" id="dmMain"><div class="dm-empty"><p>Select a conversation</p></div></div></div>';
+      const sb=$('dmSidebar');
+      contacts.forEach(u=>{
+        const row=mk('div','dm-contact-row');
+        const av=mk('div','avatar-sm');
+        if(u.profilePic){av.style.backgroundImage=`url('${u.profilePic}')`;av.style.backgroundSize='cover';av.style.backgroundPosition='center';}
+        else{av.style.background=u.avatar||avatarColor(u.id);av.textContent=(u.displayName||'?')[0].toUpperCase();}
+        row.appendChild(av);
+        const info=mk('div','dm-contact-info');
+        info.innerHTML='<div class="dm-contact-name">'+esc(u.displayName)+'</div><div class="dm-contact-handle">@'+esc(u.handle)+'</div>';
+        row.appendChild(info);
+        row.onclick=()=>{
+          document.querySelectorAll('.dm-contact-row').forEach(x=>x.classList.remove('active'));
+          row.classList.add('active');
+          openDMConversation(u);
+        };
+        sb.appendChild(row);
+      });
+    }
+
+    function openDMConversation(otherUser){
+      if(unsubDMs){unsubDMs();unsubDMs=null;}
+      activeDMUid=otherUser.id;
+      const dmMain=$('dmMain');if(!dmMain)return;
+
+      // DM room ID is sorted UIDs joined
+      const roomId=[currentUser.uid,otherUser.id].sort().join('_');
+
+      dmMain.innerHTML=`<div class="dm-thread">
+        <div class="dm-thread-header">
+          <div class="avatar-sm dm-thread-av" id="dmThreadAv"></div>
+          <div><div class="dm-thread-name">${esc(otherUser.displayName)}</div><div class="dm-thread-handle">@${esc(otherUser.handle)}</div></div>
+        </div>
+        <div class="dm-messages" id="dmMessages"><div class="loading-pulse">Loading...</div></div>
+        <div class="dm-input-area">
+          <div id="dmImgPreviewWrap" class="hidden">
+            <img id="dmImgPreview" style="max-height:80px;border-radius:8px;margin-bottom:.4rem"/>
+            <button id="dmRemoveImg" class="remove-img-btn">&#x2715; Remove</button>
+          </div>
+          <div class="dm-input-row">
+            <label class="img-upload-btn" title="Send image">
+              <svg viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <input type="file" id="dmImageInput" accept="image/*" style="display:none"/>
+            </label>
+            <input id="dmInput" class="dm-text-input" placeholder="Send a message..." maxlength="500"/>
+            <button class="btn btn-primary btn-sm" id="dmSendBtn">Send</button>
+          </div>
+        </div>
+      </div>`;
+
+      // Set avatar
+      const av=$('dmThreadAv');
+      if(otherUser.profilePic){av.style.backgroundImage=`url('${otherUser.profilePic}')`;av.style.backgroundSize='cover';av.style.backgroundPosition='center';}
+      else{av.style.background=otherUser.avatar||avatarColor(otherUser.id);av.textContent=(otherUser.displayName||'?')[0].toUpperCase();}
+
+      // Image preview
+      $('dmImageInput').onchange=async e=>{
+        const file=e.target.files[0];if(!file)return;
+        if(file.size>2*1024*1024){alert('Image must be under 2MB.');return;}
+        const b64=await toBase64(file);
+        $('dmImgPreview').src=b64;show('dmImgPreviewWrap');
+      };
+      $('dmRemoveImg').onclick=()=>{$('dmImgPreview').src='';$('dmImageInput').value='';hide('dmImgPreviewWrap');};
+
+      // Send message
+      async function sendDM(){
+        const text=($('dmInput')?.value||'').trim();
+        const imgEl=$('dmImgPreview');
+        const img=imgEl&&imgEl.src&&imgEl.src!==window.location.href?imgEl.src:null;
+        if(!text&&!img)return;
+        const btn=$('dmSendBtn');if(btn){btn.textContent='...';btn.disabled=true;}
+        try{
+          await addDoc(collection(db,'dms',roomId,'messages'),{
+            text:text||'',image:img||null,
+            senderUid:currentUser.uid,
+            senderName:currentUser.chirpName||currentUser.displayName,
+            senderHandle:currentUser.chirpHandle||'',
+            senderPic:currentUser.profilePic||null,
+            senderAvatar:currentUser.avatar||avatarColor(currentUser.uid),
+            createdAt:serverTimestamp()
+          });
+          if($('dmInput'))$('dmInput').value='';
+          if(imgEl)imgEl.src='';
+          if($('dmImageInput'))$('dmImageInput').value='';
+          hide('dmImgPreviewWrap');
+        }catch(e){alert('Failed to send: '+e.message);}
+        if(btn){btn.textContent='Send';btn.disabled=false;}
+      }
+      $('dmSendBtn').onclick=sendDM;
+      $('dmInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendDM();}};
+
+      // Listen to messages
+      const msgsQ=query(collection(db,'dms',roomId,'messages'),orderBy('createdAt','asc'),limit(100));
+      unsubDMs=onSnapshot(msgsQ,snap=>{
+        const box=$('dmMessages');if(!box)return;
+        box.innerHTML='';
+        snap.forEach(d=>{
+          const msg={id:d.id,...d.data()};
+          const isMe=msg.senderUid===currentUser.uid;
+          const bubble=mk('div','dm-bubble '+(isMe?'dm-mine':'dm-theirs'));
+          if(msg.image){const img=mk('img');img.src=msg.image;img.className='dm-img';img.onclick=()=>openImageModal(msg.image);bubble.appendChild(img);}
+          if(msg.text){const t=mk('div','dm-text');t.textContent=msg.text;bubble.appendChild(t);}
+          const ts=mk('div','dm-ts');ts.textContent=msg.createdAt?.toDate?ago(msg.createdAt.toDate()):'now';
+          bubble.appendChild(ts);
+          box.appendChild(bubble);
+        });
+        box.scrollTop=box.scrollHeight;
+      });
+    }
+
+    // ── PROFILE ──
+    async function loadProfile(uid){
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Loading profile...</div>';
+      try{
+        let u;
+        const snap=await getDoc(doc(db,'users',uid));
+        if(!snap.exists()){
+          const cs=await getDocs(query(collection(db,'chirps'),where('uid','==',uid),limit(1)));
+          if(!cs.empty){const cd=cs.docs[0].data();u={id:uid,displayName:cd.displayName||'Unknown',handle:cd.handle||'unknown',bio:'',avatar:cd.avatar||avatarColor(uid),profilePic:null,followers:[],following:[]};}
+          else{c.innerHTML='<p class="empty-state">User not found.</p>';return;}
+        }else{u={id:uid,...snap.data()};}
+
+        const isMe=uid===currentUser.uid;
+        const isFollowing=(u.followers||[]).includes(currentUser.uid);
+        const uIsAdmin=uid===ADMIN_UID;
+
+        const profileAvDiv=mk('div','profile-avatar');
+        if(u.profilePic){profileAvDiv.style.backgroundImage=`url('${u.profilePic}')`;profileAvDiv.style.backgroundSize='cover';profileAvDiv.style.backgroundPosition='center';}
+        else{profileAvDiv.style.background=u.avatar||avatarColor(uid);profileAvDiv.textContent=(u.displayName||'?')[0].toUpperCase();}
+
+        const header=mk('div','profile-header');
+        header.appendChild(profileAvDiv);
+
+        const info=mk('div','profile-info');
+        info.innerHTML=`<h2>${uIsAdmin?'👑 ':''}${esc(u.displayName||'Unknown')}</h2>
+          <p class="user-handle">@${esc(u.handle||'unknown')}${uIsAdmin?' · Admin':''}</p>
+          <p class="profile-bio">${esc(u.bio||'')}</p>
+          <div class="profile-stats">
+            <span><strong>${(u.following||[]).length}</strong> Following</span>
+            <span><strong>${(u.followers||[]).length}</strong> Followers</span>
+          </div>`;
+        header.appendChild(info);
+
+        const btnWrap=mk('div','profile-btn-wrap');
+        if(isMe){
+          const editBtn=mk('button','btn btn-outline');editBtn.textContent='Edit Profile';
+          editBtn.onclick=()=>showEditProfile(u);
+          btnWrap.appendChild(editBtn);
+        } else {
+          const followBtn=mk('button','btn '+(isFollowing?'btn-outline':'btn-primary'));
+          followBtn.textContent=isFollowing?'Unfollow':'Follow';
+          followBtn.onclick=()=>toggleFollow(uid);
+          btnWrap.appendChild(followBtn);
+          const dmBtn=mk('button','btn btn-outline btn-sm');dmBtn.style.marginTop='.5rem';
+          dmBtn.textContent='💬 Message';
+          dmBtn.onclick=()=>{
+            document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
+            document.querySelector('[data-view="messages"]')?.classList.add('active');
+            switchView('messages');
+          };
+          btnWrap.appendChild(dmBtn);
+        }
+        header.appendChild(btnWrap);
+        c.innerHTML='';
+        c.appendChild(header);
+        const lbl=mk('div','section-label');lbl.textContent='Chirps';c.appendChild(lbl);
+        const pc=mk('div');pc.id='profileChirps';pc.innerHTML='<div class="loading-pulse">Loading...</div>';c.appendChild(pc);
+
+        const cs=await getDocs(query(collection(db,'chirps'),where('uid','==',uid),limit(50)));
+        const arr=[];cs.forEach(d=>arr.push({id:d.id,...d.data()}));
+        arr.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        pc.innerHTML='';
+        if(!arr.length)pc.innerHTML='<p class="empty-state">No chirps yet.</p>';
+        else arr.forEach(d=>pc.appendChild(chirpCard(d)));
+      }catch(e){c.innerHTML='<p class="empty-state">Error: '+e.message+'</p>';}
+    }
+
+    // ── COC VIEW ──
+    function loadCoCView(){$('viewContainer').innerHTML='<div class="coc-inline">'+cocHTML()+'</div>';}
+
+    // ══════════════════════════════════════════
+    //  ADMIN PANEL
+    // ══════════════════════════════════════════
+    async function loadAdminPanel(){
+      if(!isAdmin)return;
+      const c=$('viewContainer');
+      c.innerHTML='<div class="loading-pulse">Loading admin panel...</div>';
+      try{
+        const [chirpsSnap,usersSnap]=await Promise.all([
+          getDocs(query(collection(db,'chirps'),orderBy('createdAt','desc'),limit(100))),
+          getDocs(collection(db,'users'))
+        ]);
+        c.innerHTML=`<div class="admin-panel">
+          <div class="admin-stats">
+            <div class="stat-card"><div class="stat-num">${usersSnap.size}</div><div class="stat-lbl">Users</div></div>
+            <div class="stat-card"><div class="stat-num">${chirpsSnap.size}</div><div class="stat-lbl">Chirps</div></div>
+            <div class="stat-card stat-click" id="adminStatusCard"><div class="stat-num">📢</div><div class="stat-lbl">Status</div></div>
+            <div class="stat-card stat-click" id="adminTagsCard"><div class="stat-num">🏷️</div><div class="stat-lbl">Tags</div></div>
+          </div>
+          <div class="admin-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)">
+              <h3 style="margin:0">👥 Manage Users</h3>
+              <button class="btn btn-primary btn-sm" id="adminAddUserBtn">+ Add User</button>
+            </div>
+            <div id="adminUsers"></div>
+          </div>
+          <div class="admin-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)">
+              <h3 style="margin:0">🐦 Manage Chirps</h3>
+              <button class="btn btn-primary btn-sm" id="adminAddChirpBtn">+ Post as Anyone</button>
+            </div>
+            <div id="adminChirps"></div>
+          </div>
+        </div>`;
+
+        $('adminStatusCard').onclick=openStatusEditor;
+        $('adminTagsCard').onclick=openTagsEditor;
+        $('adminAddUserBtn').onclick=openAdminAddUser;
+        $('adminAddChirpBtn').onclick=openAdminPostAsAnyone;
+
+        const ul=$('adminUsers');
+        usersSnap.forEach(d=>{
+          const u={id:d.id,...d.data()},me=u.id===ADMIN_UID;
+          const row=mk('div','admin-row');
+          const av=mk('div','avatar-sm');
+          if(u.profilePic){av.style.backgroundImage=`url('${u.profilePic}')`;av.style.backgroundSize='cover';av.style.backgroundPosition='center';}
+          else{av.style.background=u.avatar||avatarColor(u.id);av.textContent=(u.displayName||'?')[0].toUpperCase();}
+          row.appendChild(av);
+          const info=mk('div');info.style.cssText='flex:1;min-width:0;overflow:hidden';
+          info.innerHTML=`<div><span class="chirp-name">${me?'👑 ':''}${esc(u.displayName)}</span> <span class="chirp-handle">@${esc(u.handle)}</span></div><div style="font-size:.78rem;color:var(--muted)">${esc(u.email||'')}</div>`;
+          row.appendChild(info);
+          const btns=mk('div');btns.style.cssText='display:flex;gap:.5rem;flex-shrink:0';
+          const editBtn=mk('button','btn btn-outline btn-sm');editBtn.textContent='Edit';editBtn.onclick=()=>openAdminEditUser(u);
+          btns.appendChild(editBtn);
+          if(!me){const banBtn=mk('button','btn btn-danger btn-sm');banBtn.textContent='Ban';banBtn.onclick=()=>banUser(u.id,u.displayName);btns.appendChild(banBtn);}
+          else{const youBadge=mk('span','admin-you');youBadge.textContent='You';btns.appendChild(youBadge);}
+          row.appendChild(btns);
+          ul.appendChild(row);
+        });
+
+        const cl=$('adminChirps');
+        chirpsSnap.forEach(d=>{
+          const ch={id:d.id,...d.data()};
+          const row=mk('div','admin-row');
+          const av=mk('div','avatar-sm');
+          if(ch.image){av.style.background='#333';}
+          av.style.background=ch.avatar||avatarColor(ch.uid||'');av.textContent=(ch.displayName||'?')[0].toUpperCase();
+          row.appendChild(av);
+          const info=mk('div');info.style.cssText='flex:1;min-width:0;overflow:hidden';
+          info.innerHTML=`<div><span class="chirp-name">${esc(ch.displayName)}</span> <span class="chirp-handle">@${esc(ch.handle)}</span>${ch.pinned?' <span class="pin-tag">📌</span>':''}</div><p style="font-size:.875rem;margin-top:.2rem;word-break:break-word">${esc(ch.text)}${ch.image?' [📷 image]':''}</p>`;
+          row.appendChild(info);
+          const btns=mk('div');btns.style.cssText='display:flex;gap:.5rem;flex-shrink:0';
+          const pinBtn=mk('button','btn btn-outline btn-sm');pinBtn.textContent=ch.pinned?'Unpin':'Pin';
+          pinBtn.onclick=async()=>{await updateDoc(doc(db,'chirps',ch.id),{pinned:!ch.pinned});loadAdminPanel();};
+          const delBtn=mk('button','btn btn-danger btn-sm');delBtn.textContent='Delete';
+          delBtn.onclick=()=>{deleteDoc(doc(db,'chirps',ch.id));row.remove();};
+          btns.appendChild(pinBtn);btns.appendChild(delBtn);
+          row.appendChild(btns);
+          cl.appendChild(row);
+        });
+      }catch(e){c.innerHTML='<p class="empty-state">Error: '+e.message+'</p>';}
+    }
+
+    function openAdminAddUser(){
+      const modal=mk('div','modal-overlay');
+      modal.innerHTML=`<div class="modal" style="max-width:480px">
+        <button class="modal-close" id="closeAdminAddUser">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1.25rem">👑 Create User Account</h3>
+        <input id="newUserName"   class="input" placeholder="Display name" style="margin-bottom:.5rem"/>
+        <input id="newUserHandle" class="input" placeholder="@handle" style="margin-bottom:.5rem"/>
+        <input id="newUserEmail"  class="input" type="email" placeholder="Email" style="margin-bottom:.5rem"/>
+        <input id="newUserPass"   class="input" type="password" placeholder="Password (6+ chars)" style="margin-bottom:.5rem"/>
+        <input id="newUserBio"    class="input" placeholder="Bio (optional)" style="margin-bottom:.75rem"/>
+        <button class="btn btn-primary" id="saveNewUserBtn" style="width:100%">Create Account</button>
+        <p class="auth-error hidden" id="newUserErr" style="margin-top:.5rem"></p>
+      </div>`;
+      document.body.appendChild(modal);
+      modal.querySelector('#closeAdminAddUser').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+      modal.querySelector('#saveNewUserBtn').onclick=async()=>{
+        const name=modal.querySelector('#newUserName').value.trim();
+        const handle=modal.querySelector('#newUserHandle').value.trim().replace('@','').replace(/\s/g,'');
+        const email=modal.querySelector('#newUserEmail').value.trim();
+        const pass=modal.querySelector('#newUserPass').value;
+        const bio=modal.querySelector('#newUserBio').value.trim();
+        if(!name||!handle||!email||!pass){showAuthErr('newUserErr','All fields except bio are required.');return;}
+        try{
+          modal.querySelector('#saveNewUserBtn').textContent='Creating...';
+          const cred=await createUserWithEmailAndPassword(auth,email,pass);
+          await updateProfile(cred.user,{displayName:name});
+          await setDoc(doc(db,'users',cred.user.uid),{displayName:name,handle,email,bio,avatar:avatarColor(cred.user.uid),profilePic:null,followers:[],following:[],createdAt:serverTimestamp()});
+          modal.remove();loadAdminPanel();
+        }catch(e){showAuthErr('newUserErr',fErr(e.code));modal.querySelector('#saveNewUserBtn').textContent='Create Account';}
+      };
+    }
+
+    function openAdminEditUser(u){
+      const modal=mk('div','modal-overlay');
+      modal.innerHTML=`<div class="modal" style="max-width:480px">
+        <button class="modal-close" id="closeAdminEdit">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1.25rem">👑 Edit User: @${esc(u.handle)}</h3>
+        <input id="editUserName"   class="input" value="${esc(u.displayName||'')}" placeholder="Display name" style="margin-bottom:.5rem"/>
+        <input id="editUserHandle" class="input" value="${esc(u.handle||'')}" placeholder="@handle" style="margin-bottom:.5rem"/>
+        <textarea id="editUserBio" class="input" placeholder="Bio" style="height:70px;resize:vertical;border-radius:10px;margin-bottom:.75rem">${esc(u.bio||'')}</textarea>
+        <button class="btn btn-primary" id="saveAdminEditBtn" style="width:100%">Save Changes</button>
+      </div>`;
+      document.body.appendChild(modal);
+      modal.querySelector('#closeAdminEdit').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+      modal.querySelector('#saveAdminEditBtn').onclick=async()=>{
+        const name=modal.querySelector('#editUserName').value.trim();
+        const handle=modal.querySelector('#editUserHandle').value.trim().replace('@','').replace(/\s/g,'');
+        const bio=modal.querySelector('#editUserBio').value.trim();
+        if(!name||!handle)return;
+        await updateDoc(doc(db,'users',u.id),{displayName:name,handle,bio});
+        modal.remove();loadAdminPanel();
+      };
+    }
+
+    function openAdminPostAsAnyone(){
+      const modal=mk('div','modal-overlay');
+      modal.innerHTML=`<div class="modal" style="max-width:520px">
+        <button class="modal-close" id="closeAdminPost">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1.25rem">👑 Post as Anyone</h3>
+        <textarea id="adminAnyChirpText" class="input" style="height:100px;resize:vertical;border-radius:10px;margin-bottom:.5rem;font-size:1rem" placeholder="What should they say?" maxlength="280"></textarea>
+        <div id="adminPostImgPreviewWrap" class="hidden"><img id="adminPostImgPreview" style="max-width:100%;border-radius:8px;margin-bottom:.5rem"/><button id="adminPostRemoveImg" class="remove-img-btn">&#x2715; Remove</button></div>
+        <input id="adminAnyName" class="input" placeholder="Display name (blank = Admin)" style="margin-bottom:.5rem"/>
+        <input id="adminAnyHandle" class="input" placeholder="@handle (blank = Admin)" style="margin-bottom:.5rem"/>
+        <label class="coc-checkbox" style="margin-bottom:.75rem;font-size:.9rem"><input type="checkbox" id="adminAnyPin"/><span>Pin this chirp</span></label>
+        <label class="img-upload-btn" style="display:inline-flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer;color:var(--muted);font-size:.875rem">
+          <svg viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          Attach image
+          <input type="file" id="adminPostImgInput" accept="image/*" style="display:none"/>
+        </label>
+        <button class="btn btn-primary" id="saveAdminPostBtn" style="width:100%">Post Chirp</button>
+      </div>`;
+      document.body.appendChild(modal);
+      modal.querySelector('#closeAdminPost').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+      modal.querySelector('#adminPostImgInput').onchange=async e=>{
+        const file=e.target.files[0];if(!file)return;
+        if(file.size>2*1024*1024){alert('Image must be under 2MB.');return;}
+        const b64=await toBase64(file);
+        modal.querySelector('#adminPostImgPreview').src=b64;show('adminPostImgPreviewWrap');
+      };
+      modal.querySelector('#adminPostRemoveImg').onclick=()=>{modal.querySelector('#adminPostImgPreview').src='';modal.querySelector('#adminPostImgInput').value='';hide('adminPostImgPreviewWrap');};
+      modal.querySelector('#saveAdminPostBtn').onclick=async()=>{
+        const text=modal.querySelector('#adminAnyChirpText').value.trim();
+        const name=modal.querySelector('#adminAnyName').value.trim()||currentUser.chirpName||currentUser.displayName;
+        const handle=modal.querySelector('#adminAnyHandle').value.trim().replace('@','')||currentUser.chirpHandle||'admin';
+        const pinned=modal.querySelector('#adminAnyPin').checked;
+        const imgEl=modal.querySelector('#adminPostImgPreview');
+        const image=imgEl&&imgEl.src&&imgEl.src!==window.location.href?imgEl.src:null;
+        if(!text&&!image)return;
+        modal.querySelector('#saveAdminPostBtn').textContent='Posting...';
+        await addDoc(collection(db,'chirps'),{text:text||'',image:image||null,uid:currentUser.uid,displayName:name,handle,avatar:currentUser.avatar||avatarColor(currentUser.uid),isAdmin:true,pinned,likes:[],rechirps:[],createdAt:serverTimestamp()});
+        modal.remove();loadAdminPanel();
+      };
+    }
+
+    async function banUser(uid,name){
+      if(!confirm('Ban "'+name+'"? Deletes their profile and all chirps.'))return;
+      const cs=await getDocs(query(collection(db,'chirps'),where('uid','==',uid)));
+      await Promise.all(cs.docs.map(d=>deleteDoc(doc(db,'chirps',d.id))));
+      await deleteDoc(doc(db,'users',uid));
+      loadAdminPanel();
+    }
+
+    // ══════════════════════════════════════════
+    //  EDIT PROFILE (with profile picture)
+    // ══════════════════════════════════════════
+    function showEditProfile(u){
+      const modal=mk('div','modal-overlay');
+      const hasProfilePic=u.profilePic?true:false;
+      modal.innerHTML=`<div class="modal" style="max-width:460px">
+        <button class="modal-close" id="closeEdit">&#x2715;</button>
+        <h3 style="font-family:var(--font-head);margin-bottom:1rem">Edit Profile</h3>
+        <div class="profile-pic-editor">
+          <div class="profile-pic-preview" id="picPreview" style="background:${hasProfilePic?'none':u.avatar||avatarColor(u.id)};${hasProfilePic?'background-image:url(\''+u.profilePic+'\');background-size:cover;background-position:center':''}">
+            ${hasProfilePic?'':'<span style="font-size:2rem;color:#fff">'+(u.displayName||'?')[0].toUpperCase()+'</span>'}
+          </div>
+          <div class="profile-pic-actions">
+            <label class="btn btn-outline btn-sm" style="cursor:pointer">
+              📷 Change Photo
+              <input type="file" id="profilePicInput" accept="image/*" style="display:none"/>
+            </label>
+            ${hasProfilePic?'<button class="btn btn-danger btn-sm" id="removeProfilePicBtn">Remove Photo</button>':''}
+          </div>
+        </div>
+        <input id="editName" class="input" value="${esc(u.displayName||'')}" placeholder="Name" style="margin-bottom:.5rem"/>
+        <textarea id="editBio" class="input" style="height:80px;resize:vertical;border-radius:10px" placeholder="Bio (optional)">${esc(u.bio||'')}</textarea>
+        <button class="btn btn-primary" style="margin-top:.75rem;width:100%" id="saveEdit">Save Changes</button>
+      </div>`;
+      document.body.appendChild(modal);
+
+      let newProfilePic = u.profilePic || null;
+
+      modal.querySelector('#profilePicInput').onchange=async e=>{
+        const file=e.target.files[0];if(!file)return;
+        if(file.size>2*1024*1024){alert('Image must be under 2MB.');return;}
+        const b64=await toBase64(file);
+        newProfilePic=b64;
+        const prev=modal.querySelector('#picPreview');
+        prev.style.backgroundImage=`url('${b64}')`;
+        prev.style.backgroundSize='cover';
+        prev.style.backgroundPosition='center';
+        prev.innerHTML='';
+      };
+
+      const removeBtn=modal.querySelector('#removeProfilePicBtn');
+      if(removeBtn)removeBtn.onclick=()=>{
+        newProfilePic=null;
+        const prev=modal.querySelector('#picPreview');
+        prev.style.backgroundImage='';
+        prev.style.background=u.avatar||avatarColor(u.id);
+        prev.innerHTML=`<span style="font-size:2rem;color:#fff">${(u.displayName||'?')[0].toUpperCase()}</span>`;
+      };
+
+      modal.querySelector('#closeEdit').onclick=()=>modal.remove();
+      modal.onclick=e=>{if(e.target===modal)modal.remove();};
+      modal.querySelector('#saveEdit').onclick=async()=>{
+        const name=modal.querySelector('#editName').value.trim();
+        const bio=modal.querySelector('#editBio').value.trim();
+        if(!name)return;
+        modal.querySelector('#saveEdit').textContent='Saving...';
+        await updateDoc(doc(db,'users',currentUser.uid),{displayName:name,bio,profilePic:newProfilePic});
+        currentUser.chirpName=name;currentUser.bio=bio;currentUser.profilePic=newProfilePic;
+        modal.remove();
+        loadProfile(currentUser.uid);
+        // Update sidebar avatar
+        setAvatar($('sidebarAvatar'),currentUser);
+        const nm=$('sidebarUser')?.querySelector('.user-name');
+        if(nm)nm.innerHTML=(isAdmin?'<span class="admin-crown">👑</span>':'')+esc(name);
+      };
+    }
+
+    // ══════════════════════════════════════════
+    //  FOLLOW
+    // ══════════════════════════════════════════
+    async function toggleFollow(uid){
+      const myRef=doc(db,'users',currentUser.uid),theirRef=doc(db,'users',uid);
+      const snap=await getDoc(theirRef);
+      const following=(snap.data()?.followers||[]).includes(currentUser.uid);
+      if(following){await updateDoc(theirRef,{followers:arrayRemove(currentUser.uid)});await updateDoc(myRef,{following:arrayRemove(uid)});}
+      else{await updateDoc(theirRef,{followers:arrayUnion(currentUser.uid)});await updateDoc(myRef,{following:arrayUnion(uid)});}
+      loadProfile(uid);
+    }
+
+    // ══════════════════════════════════════════
+    //  POST CHIRP
+    // ══════════════════════════════════════════
+    async function postChirp(){
+      const text=($('chirpText')?.value||'').trim();
+      const imgEl=$('imagePreview');
+      const image=imgEl&&imgEl.src&&imgEl.src!==window.location.href?imgEl.src:null;
+      if(!text&&!image)return;
+      $('postBtn').textContent='Chirping...';$('postBtn').disabled=true;
+      try{
+        const overrideName  =isAdmin&&$('adminPostAs')?$('adminPostAs').value.trim():'';
+        const overrideHandle=isAdmin&&$('adminPostHandle')?$('adminPostHandle').value.trim().replace('@',''):'';
+        const pinned        =isAdmin&&$('adminPinChirp')?$('adminPinChirp').checked:false;
+        await addDoc(collection(db,'chirps'),{
+          text:text||'',image:image||null,
+          uid:currentUser.uid,
+          displayName:overrideName||currentUser.chirpName||currentUser.displayName,
+          handle:overrideHandle||currentUser.chirpHandle||currentUser.handle||'unknown',
+          avatar:currentUser.avatar||avatarColor(currentUser.uid),
+          profilePic:currentUser.profilePic||null,
+          isAdmin,pinned,likes:[],rechirps:[],
+          createdAt:serverTimestamp()
+        });
+        clearCompose();
+        hide('composeModal');
+      }catch(e){alert('Failed to post: '+e.message);}
+      $('postBtn').textContent='Chirp';$('postBtn').disabled=false;
+    }
+
+    // ══════════════════════════════════════════
+    //  CHIRP CARD
+    // ══════════════════════════════════════════
+    function chirpCard(data){
+      const el=mk('div','chirp-card'+(data.pinned?' pinned-chirp':''));
+      const liked    =(data.likes||[]).includes(currentUser.uid);
+      const rechirped=(data.rechirps||[]).includes(currentUser.uid);
+      const time     =data.createdAt?.toDate?ago(data.createdAt.toDate()):'just now';
+      const ini      =(data.displayName||'?')[0].toUpperCase();
+      const canDel   =data.uid===currentUser.uid||isAdmin;
+      const byAdmin  =data.uid===ADMIN_UID;
+
+      // Avatar
+      const av=mk('div','avatar-sm');
+      av.style.flexShrink='0';
+      if(data.profilePic){av.style.backgroundImage=`url('${data.profilePic}')`;av.style.backgroundSize='cover';av.style.backgroundPosition='center';}
+      else{av.style.background=data.avatar||'#7b61ff';av.textContent=ini;}
+      el.appendChild(av);
+
+      const body=mk('div','chirp-body');
+      body.innerHTML=`${data.pinned?'<div class="pin-ribbon">📌 Pinned</div>':''}
+        <div class="chirp-meta">
+          <span class="chirp-name" data-uid="${data.uid}">${byAdmin?'👑 ':''}${esc(data.displayName||'')}</span>
+          <span class="chirp-handle">@${esc(data.handle||'')}</span>
+          ${byAdmin?'<span class="admin-tag">Admin</span>':''}
+          <span class="chirp-time">${time}</span>
+          ${canDel?'<button class="del-btn" title="Delete">&#x2715;</button>':''}
+        </div>
+        ${data.text?'<p class="chirp-text">'+linkHashtags(esc(data.text))+'</p>':''}
+        ${data.image?'<img class="chirp-img" src="'+data.image+'" alt="chirp image"/>':''}
+        <div class="chirp-actions">
+          <button class="action-btn like-btn ${liked?'liked':''}">${liked?'♥':'♡'} <span>${(data.likes||[]).length}</span></button>
+          <button class="action-btn rechirp-btn ${rechirped?'rechirped':''}">⟳ <span>${(data.rechirps||[]).length}</span></button>
+          ${isAdmin?'<button class="action-btn pin-btn" title="'+(data.pinned?'Unpin':'Pin')+'">'+(data.pinned?'📌':'📍')+'</button>':''}
+        </div>`;
+      el.appendChild(body);
+
+      body.querySelector('.like-btn').onclick   =()=>toggleLike(data.id,data.likes||[]);
+      body.querySelector('.rechirp-btn').onclick=()=>toggleRechirp(data.id,data.rechirps||[]);
+      body.querySelector('.chirp-name').onclick =()=>gotoProfile(data.uid);
+      if(canDel)body.querySelector('.del-btn').onclick=()=>delChirp(data.id);
+      if(isAdmin){const pb=body.querySelector('.pin-btn');if(pb)pb.onclick=async()=>await updateDoc(doc(db,'chirps',data.id),{pinned:!data.pinned});}
+      if(data.image){const img=body.querySelector('.chirp-img');if(img)img.onclick=()=>openImageModal(data.image);}
+      body.querySelectorAll('.hashtag-link').forEach(a=>{a.onclick=e=>{e.preventDefault();searchByTag(a.dataset.tag);};});
+
+      return el;
+    }
+
+    function linkHashtags(text){
+      return text.replace(/#([a-zA-Z]\w*)/g,'<a href="#" class="hashtag-link" data-tag="$1">#$1</a>');
+    }
+
+    function openImageModal(src){
+      const modal=mk('div','img-modal-overlay');
+      modal.innerHTML=`<div class="img-modal-inner"><button class="img-modal-close">&#x2715;</button><img src="${src}" class="img-modal-img"/></div>`;
+      document.body.appendChild(modal);
+      modal.onclick=e=>{if(e.target===modal||e.target.classList.contains('img-modal-close'))modal.remove();};
+    }
+
+    // ══════════════════════════════════════════
+    //  USER CARD
+    // ══════════════════════════════════════════
+    function userCard(u){
+      const el=mk('div','user-card');
+      const isF=(u.followers||[]).includes(currentUser.uid);
+      const uA=u.id===ADMIN_UID;
+      const av=mk('div','avatar-md');
+      if(u.profilePic){av.style.backgroundImage=`url('${u.profilePic}')`;av.style.backgroundSize='cover';av.style.backgroundPosition='center';}
+      else{av.style.background=u.avatar||avatarColor(u.id);av.textContent=(u.displayName||'?')[0].toUpperCase();}
+      el.appendChild(av);
+      const info=mk('div','user-card-info');
+      info.innerHTML=`<div class="chirp-name">${uA?'👑 ':''}${esc(u.displayName)}</div>
+        <div class="chirp-handle">@${esc(u.handle)}${uA?' · Admin':''}</div>
+        ${u.bio?'<div class="profile-bio" style="font-size:.85rem">'+esc(u.bio)+'</div>':''}`;
+      el.appendChild(info);
+      const followBtn=mk('button','btn '+(isF?'btn-outline':'btn-primary')+' btn-sm');
+      followBtn.textContent=isF?'Unfollow':'Follow';
+      followBtn.onclick=()=>toggleFollow(u.id);
+      el.appendChild(followBtn);
+      info.querySelector('.chirp-name').onclick=()=>gotoProfile(u.id);
+      return el;
+    }
+
+    function gotoProfile(uid){
+      if(unsubFeed){unsubFeed();unsubFeed=null;}
+      if(unsubDMs){unsubDMs();unsubDMs=null;}
+      document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
+      document.querySelector('[data-view="profile"]')?.classList.add('active');
+      $('viewTitle').textContent='Profile';
+      loadProfile(uid);
+    }
+
+    // ══════════════════════════════════════════
+    //  ACTIONS
+    // ══════════════════════════════════════════
+    async function toggleLike(id,likes){const r=doc(db,'chirps',id);likes.includes(currentUser.uid)?await updateDoc(r,{likes:arrayRemove(currentUser.uid)}):await updateDoc(r,{likes:arrayUnion(currentUser.uid)});}
+    async function toggleRechirp(id,rechirps){const r=doc(db,'chirps',id);rechirps.includes(currentUser.uid)?await updateDoc(r,{rechirps:arrayRemove(currentUser.uid)}):await updateDoc(r,{rechirps:arrayUnion(currentUser.uid)});}
+    async function delChirp(id){if(!confirm('Delete this chirp?'))return;await deleteDoc(doc(db,'chirps',id));}
+
+    // ══════════════════════════════════════════
+    //  SEARCH
+    // ══════════════════════════════════════════
+    async function handleSearch(){
+      const q=($('searchInput')?.value||'').trim().toLowerCase();
+      if(!q){loadTrending();return;}
+      if(q.startsWith('#')){searchByTag(q.slice(1));return;}
+      const snap=await getDocs(collection(db,'chirps'));
+      const results=[];snap.forEach(d=>{if((d.data().text||'').toLowerCase().includes(q))results.push({id:d.id,...d.data()});});
+      const c=$('viewContainer');
+      c.innerHTML='<h3 class="section-label">Results for "'+esc(q)+'"</h3>';
+      if(!results.length){c.innerHTML+='<p class="empty-state">No chirps found.</p>';return;}
+      results.slice(0,20).forEach(r=>c.appendChild(chirpCard(r)));
+      $('viewTitle').textContent='Search';
+    }
+  </script>
+
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#0d0f14;--surface:#161a23;--surface2:#1e2435;--border:#262d40;
+      --primary:#f5a623;--primary-h:#ffbb55;--text:#e8eaf0;--muted:#6b7592;
+      --like:#ff6b6b;--rechirp:#4ecdc4;--radius:14px;
+      --font-body:'DM Sans',sans-serif;--font-head:'Playfair Display',serif;
+    }
+    body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-height:100vh;line-height:1.5}
+    #app{min-height:100vh}
+
+    /* CoC */
+    .coc-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;background:radial-gradient(ellipse at 30% 40%,#1a1200 0%,var(--bg) 65%)}
+    .coc-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;width:100%;max-width:640px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+    .coc-header{background:linear-gradient(135deg,#1a1200,#262000);border-bottom:1px solid var(--border);padding:2.5rem 2rem;text-align:center}
+    .coc-header h1{font-family:var(--font-head);font-size:2rem;color:var(--primary);margin-bottom:.5rem}
+    .coc-header p{color:var(--muted)}
+    .coc-body{padding:1.5rem 2rem;max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:1rem}
+    .coc-body::-webkit-scrollbar{width:4px}
+    .coc-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+    .coc-rule{display:flex;gap:1rem;align-items:flex-start}
+    .coc-rule-icon{font-size:1.3rem;flex-shrink:0;margin-top:.1rem}
+    .coc-rule h3{font-size:.95rem;font-weight:700;color:var(--primary);margin-bottom:.3rem}
+    .coc-rule p{font-size:.875rem;color:#b0b8d0;line-height:1.65}
+    .coc-footer{padding:1.5rem 2rem;border-top:1px solid var(--border);background:var(--surface2);display:flex;flex-direction:column;gap:1rem}
+    .coc-checkbox{display:flex;align-items:center;gap:.75rem;cursor:pointer;font-size:.95rem;user-select:none}
+    .coc-checkbox input{width:18px;height:18px;cursor:pointer;accent-color:var(--primary)}
+    .coc-inline{padding:1.5rem;display:flex;flex-direction:column;gap:1rem}
+    .coc-inline .coc-rule{padding:1.25rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
+
+    /* Auth */
+    .auth-screen{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;gap:2rem;background:radial-gradient(ellipse at 20% 50%,#1a1400 0%,var(--bg) 60%)}
+    .auth-brand{text-align:center}
+    .brand-title{font-family:var(--font-head);font-size:3.5rem;font-weight:900;color:var(--primary);letter-spacing:-2px}
+    .brand-sub{color:var(--muted);margin-top:.25rem;font-size:1.1rem}
+    .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:100%;max-width:400px;display:flex;flex-direction:column;gap:.75rem}
+    .auth-card h2{font-family:var(--font-head);font-size:1.6rem;margin-bottom:.25rem}
+    .auth-switch{font-size:.9rem;color:var(--muted)}
+    .auth-switch a{color:var(--primary);text-decoration:none}
+    .auth-error{color:var(--like);font-size:.875rem}
+
+    /* Layout */
+    .layout{display:grid;grid-template-columns:260px 1fr 300px;max-width:1100px;margin:0 auto;min-height:100vh}
+
+    /* Sidebar */
+    .sidebar{border-right:1px solid var(--border);padding:1.5rem 1rem;display:flex;flex-direction:column;gap:.5rem;position:sticky;top:0;height:100vh;overflow-y:auto}
+    .sidebar-logo{font-family:var(--font-head);font-size:1.8rem;font-weight:900;color:var(--primary);padding:.5rem 1rem 1rem;letter-spacing:-1px}
+    .sidebar-logo span{margin-left:.25rem}
+    .sidebar-nav{display:flex;flex-direction:column;gap:.25rem;flex:1}
+    .nav-item{display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;border-radius:50px;text-decoration:none;color:var(--text);font-size:1rem;font-weight:500;transition:background .15s,color .15s}
+    .nav-item svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+    .nav-item:hover{background:var(--surface2)}
+    .nav-item.active{color:var(--primary);font-weight:600}
+    .nav-admin{color:#f5c842}
+    .nav-admin svg{stroke:#f5c842}
+    .nav-admin.active{color:#f5c842}
+    .chirp-btn{margin:1rem 0;padding:.9rem;font-size:1rem;font-weight:600;letter-spacing:.5px}
+    .sidebar-user{display:flex;align-items:center;gap:.75rem;padding:.75rem;border-radius:var(--radius);background:var(--surface);margin-top:auto}
+    .user-name{font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .user-handle{color:var(--muted);font-size:.8rem}
+    .admin-crown{margin-right:.15rem}
+    .signout-btn{margin-left:auto;background:none;border:none;cursor:pointer;color:var(--muted);padding:.25rem;display:flex;transition:color .15s;flex-shrink:0}
+    .signout-btn:hover{color:var(--like)}
+    .signout-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+    /* Main */
+    .main{border-right:1px solid var(--border);min-height:100vh}
+    .top-bar{padding:1rem 1.5rem;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(13,15,20,.85);backdrop-filter:blur(12px);z-index:10}
+    .top-bar h2{font-family:var(--font-head);font-size:1.4rem}
+    #viewContainer{padding-bottom:4rem}
+
+    /* Status Banner */
+    .status-banner{display:flex;align-items:center;gap:.75rem;padding:.85rem 1.5rem;font-size:.9rem;font-weight:500;border-bottom:1px solid transparent;animation:fadeUp .3s ease}
+    .status-info{background:rgba(69,183,209,.12);border-color:rgba(69,183,209,.25);color:#45b7d1}
+    .status-warning{background:rgba(245,166,35,.12);border-color:rgba(245,166,35,.25);color:var(--primary)}
+    .status-success{background:rgba(78,205,196,.12);border-color:rgba(78,205,196,.25);color:var(--rechirp)}
+    .status-error{background:rgba(255,107,107,.12);border-color:rgba(255,107,107,.25);color:var(--like)}
+    .sb-icon{font-size:1rem;flex-shrink:0}.sb-msg{flex:1}
+    .sb-edit{background:none;border:1px solid currentColor;color:inherit;border-radius:20px;padding:.2rem .7rem;font-size:.8rem;cursor:pointer;font-family:var(--font-body);font-weight:600;transition:background .15s;flex-shrink:0}
+    .sb-edit:hover{background:rgba(255,255,255,.1)}
+    .stype-row{display:flex;gap:.5rem;flex-wrap:wrap}
+    .stype-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:20px;padding:.35rem .85rem;font-size:.85rem;cursor:pointer;font-family:var(--font-body);transition:border-color .15s,background .15s}
+    .stype-btn.active{border-color:var(--primary);background:rgba(245,166,35,.15);color:var(--primary)}
+
+    /* Tags */
+    .tags-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;margin-top:1rem}
+    .tags-card h3{font-family:var(--font-head);font-size:1.2rem;margin-bottom:1rem}
+    .tag-pill{background:rgba(245,166,35,.12);color:var(--primary);border:1px solid rgba(245,166,35,.25);border-radius:20px;padding:.3rem .8rem;font-size:.85rem;font-weight:600;cursor:pointer;font-family:var(--font-body);transition:background .15s}
+    .tag-pill:hover{background:rgba(245,166,35,.25)}
+    #tagsList{display:flex;flex-wrap:wrap;gap:.5rem}
+    .tag-editor-pill{display:inline-flex;align-items:center;gap:.35rem;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:.3rem .75rem;font-size:.85rem;color:var(--primary)}
+    .tag-remove-btn{background:none;border:none;cursor:pointer;color:var(--muted);font-size:.8rem;padding:0;line-height:1}
+    .tag-remove-btn:hover{color:var(--like)}
+    .hashtag-link{color:var(--primary);text-decoration:none;font-weight:600}
+    .hashtag-link:hover{text-decoration:underline}
+
+    /* Chirp Card */
+    .chirp-card{display:flex;gap:1rem;padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);transition:background .15s;animation:fadeUp .2s ease;position:relative}
+    .chirp-card:hover{background:var(--surface)}
+    .pinned-chirp{border-left:3px solid var(--primary);background:rgba(245,166,35,.04)}
+    .pin-ribbon{font-size:.75rem;color:var(--primary);font-weight:600;margin-bottom:.25rem}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+    .chirp-body{flex:1;min-width:0}
+    .chirp-meta{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem}
+    .chirp-name{font-weight:600;font-size:.95rem;cursor:pointer}
+    .chirp-name:hover{color:var(--primary);text-decoration:underline}
+    .chirp-handle{color:var(--muted);font-size:.85rem}
+    .chirp-time{color:var(--muted);font-size:.8rem;margin-left:auto}
+    .chirp-text{font-size:.975rem;line-height:1.6;word-break:break-word;margin-bottom:.4rem}
+    .chirp-img{max-width:100%;border-radius:12px;margin-top:.5rem;cursor:pointer;display:block;max-height:300px;object-fit:cover}
+    .admin-tag{background:rgba(245,166,35,.15);color:var(--primary);font-size:.7rem;font-weight:700;letter-spacing:.05em;padding:.1rem .45rem;border-radius:4px;text-transform:uppercase}
+    .pin-tag{background:rgba(245,166,35,.15);color:var(--primary);font-size:.75rem;font-weight:600;padding:.1rem .4rem;border-radius:4px}
+    .chirp-actions{display:flex;gap:1.5rem;margin-top:.75rem;align-items:center}
+    .action-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:.9rem;display:flex;align-items:center;gap:.3rem;transition:color .15s,transform .1s}
+    .action-btn:hover{transform:scale(1.1)}
+    .like-btn:hover,.like-btn.liked{color:var(--like)}
+    .rechirp-btn:hover,.rechirp-btn.rechirped{color:var(--rechirp)}
+    .pin-btn:hover{color:var(--primary)}
+
+    .del-btn{margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem;padding:.1rem .4rem;border-radius:4px;transition:color .15s,background .15s}
+    .del-btn:hover{color:var(--like);background:rgba(255,107,107,.1)}
+
+    /* Image upload */
+    .img-upload-btn{cursor:pointer;color:var(--muted);display:flex;align-items:center;transition:color .15s}
+    .img-upload-btn:hover{color:var(--primary)}
+    .img-upload-btn svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    .remove-img-btn{background:rgba(255,107,107,.15);border:none;color:var(--like);border-radius:6px;padding:.25rem .6rem;font-size:.8rem;cursor:pointer;margin-top:.25rem;font-family:var(--font-body)}
+    .remove-img-btn:hover{background:rgba(255,107,107,.3)}
+
+    /* Image modal */
+    .img-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;z-index:200;padding:1rem;cursor:pointer}
+    .img-modal-inner{position:relative;max-width:90vw;max-height:90vh}
+    .img-modal-img{max-width:100%;max-height:90vh;border-radius:12px;display:block}
+    .img-modal-close{position:absolute;top:-2rem;right:0;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+
+    /* Avatars */
+    .avatar-sm,.avatar-md,.profile-avatar{display:flex;align-items:center;justify-content:center;border-radius:50%;font-weight:700;color:#fff;flex-shrink:0}
+    .avatar-sm{width:42px;height:42px;font-size:1rem}
+    .avatar-md{width:52px;height:52px;font-size:1.2rem}
+    .profile-avatar{width:80px;height:80px;font-size:2rem}
+
+    /* Profile */
+    .profile-header{display:flex;align-items:flex-start;gap:1rem;padding:1.5rem;border-bottom:1px solid var(--border)}
+    .profile-info{flex:1}
+    .profile-info h2{font-size:1.4rem;font-weight:700}
+    .profile-bio{color:var(--muted);font-size:.9rem;margin:.5rem 0}
+    .profile-stats{display:flex;gap:1.5rem;margin-top:.75rem;font-size:.9rem}
+    .profile-stats strong{color:var(--text)}
+    .profile-btn-wrap{display:flex;flex-direction:column;gap:.5rem;flex-shrink:0}
+    .section-label{padding:1rem 1.5rem .5rem;color:var(--muted);font-size:.85rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+
+    /* Profile pic editor */
+    .profile-pic-editor{display:flex;align-items:center;gap:1.25rem;margin-bottom:1rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}
+    .profile-pic-preview{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden}
+    .profile-pic-actions{display:flex;flex-direction:column;gap:.5rem}
+
+    /* User Card */
+    .user-card{display:flex;align-items:center;gap:1rem;padding:1rem 1.5rem;border-bottom:1px solid var(--border);transition:background .15s}
+    .user-card:hover{background:var(--surface)}
+    .user-card-info{flex:1}
+
+    /* DMs */
+    .dm-layout{display:grid;grid-template-columns:240px 1fr;height:calc(100vh - 60px)}
+    .dm-sidebar{border-right:1px solid var(--border);overflow-y:auto;padding:.75rem 0}
+    .dm-sidebar-title{padding:.5rem 1rem 1rem;font-family:var(--font-head);font-size:1.1rem;border-bottom:1px solid var(--border);margin-bottom:.5rem}
+    .dm-contact-row{display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;cursor:pointer;transition:background .15s}
+    .dm-contact-row:hover,.dm-contact-row.active{background:var(--surface2)}
+    .dm-contact-name{font-weight:600;font-size:.9rem}
+    .dm-contact-handle{color:var(--muted);font-size:.8rem}
+    .dm-contact-info{min-width:0;overflow:hidden}
+    .dm-main{display:flex;flex-direction:column;overflow:hidden}
+    .dm-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);padding:2rem;text-align:center}
+    .dm-thread{display:flex;flex-direction:column;height:100%}
+    .dm-thread-header{display:flex;align-items:center;gap:.75rem;padding:1rem 1.25rem;border-bottom:1px solid var(--border);flex-shrink:0}
+    .dm-thread-name{font-weight:600}
+    .dm-thread-handle{color:var(--muted);font-size:.85rem}
+    .dm-messages{flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:.75rem}
+    .dm-bubble{max-width:72%;display:flex;flex-direction:column;gap:.25rem}
+    .dm-mine{align-self:flex-end;align-items:flex-end}
+    .dm-theirs{align-self:flex-start;align-items:flex-start}
+    .dm-text{padding:.6rem .9rem;border-radius:18px;font-size:.925rem;word-break:break-word;line-height:1.5}
+    .dm-mine .dm-text{background:var(--primary);color:#000;border-bottom-right-radius:4px}
+    .dm-theirs .dm-text{background:var(--surface2);color:var(--text);border-bottom-left-radius:4px}
+    .dm-img{max-width:200px;border-radius:12px;cursor:pointer}
+    .dm-ts{font-size:.72rem;color:var(--muted);padding:0 .25rem}
+    .dm-input-area{padding:.75rem 1rem;border-top:1px solid var(--border);flex-shrink:0}
+    .dm-input-row{display:flex;align-items:center;gap:.5rem}
+    .dm-text-input{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:24px;padding:.6rem 1rem;color:var(--text);font-family:var(--font-body);font-size:.925rem;outline:none;transition:border-color .15s}
+    .dm-text-input:focus{border-color:var(--primary)}
+
+    /* Admin Panel */
+    .admin-panel{padding:1.5rem;display:flex;flex-direction:column;gap:2rem}
+    .admin-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;text-align:center;transition:border-color .15s}
+    .stat-click{cursor:pointer}
+    .stat-click:hover{border-color:var(--primary)}
+    .stat-num{font-size:2rem;font-weight:800;color:var(--primary);font-family:var(--font-head)}
+    .stat-lbl{font-size:.8rem;color:var(--muted);margin-top:.25rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+    .admin-section h3{font-size:1.1rem;font-weight:700}
+    .admin-row{display:flex;align-items:center;gap:.75rem;padding:.85rem;border-radius:10px;margin-bottom:.5rem;background:var(--surface);border:1px solid var(--border)}
+    .admin-you{background:rgba(245,166,35,.15);color:var(--primary);font-size:.75rem;font-weight:700;padding:.25rem .6rem;border-radius:20px;flex-shrink:0}
+    .admin-compose-label{font-size:.8rem;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:.08em;margin:.75rem 0 .5rem;padding-top:.75rem;border-top:1px solid var(--border)}
+    .admin-compose-row{margin-bottom:.5rem}
+    .admin-compose-row label{font-size:.8rem;color:var(--muted);display:block;margin-bottom:.25rem}
+
+    /* Right Panel */
+    .right-panel{padding:1.5rem 1rem;overflow-y:auto}
+    .search-box{display:flex;align-items:center;gap:.75rem;background:var(--surface);border:1px solid var(--border);border-radius:50px;padding:.65rem 1.1rem;margin-bottom:1.25rem;transition:border-color .15s}
+    .search-box:focus-within{border-color:var(--primary)}
+    .search-box svg{width:17px;height:17px;stroke:var(--muted);fill:none;stroke-width:2;stroke-linecap:round;flex-shrink:0}
+    .search-box input{background:none;border:none;outline:none;color:var(--text);font-size:.9rem;width:100%;font-family:var(--font-body)}
+    .trending-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem}
+    .trending-card h3{font-family:var(--font-head);font-size:1.2rem;margin-bottom:1rem}
+    .trend-item{display:flex;justify-content:space-between;align-items:center;padding:.6rem 0;border-bottom:1px solid var(--border);font-size:.9rem}
+    .trend-item:last-child{border-bottom:none}
+    .trend-word{font-weight:600;color:var(--primary)}
+    .trend-count{font-size:.8rem;color:var(--muted)}
+    .clickable-trend{cursor:pointer}
+    .clickable-trend:hover{background:var(--surface2);border-radius:8px;padding-left:.5rem;padding-right:.5rem}
+
+    /* Modal */
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:flex-start;justify-content:center;padding:4rem 1rem;z-index:100}
+    .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:100%;max-width:560px;position:relative;animation:slideDown .2s ease;max-height:85vh;overflow-y:auto}
+    @keyframes slideDown{from{opacity:0;transform:translateY(-16px)}to{opacity:1;transform:translateY(0)}}
+    .modal-close{position:absolute;top:1rem;right:1rem;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem;transition:color .15s}
+    .modal-close:hover{color:var(--text)}
+    .compose-area{display:flex;gap:1rem}
+    .compose-right{flex:1;min-width:0}
+    textarea{width:100%;background:none;border:none;outline:none;color:var(--text);font-family:var(--font-body);font-size:1.1rem;resize:none;min-height:100px;line-height:1.5}
+    textarea::placeholder{color:var(--muted)}
+    .compose-footer{display:flex;align-items:center;gap:1rem;padding-top:.75rem;border-top:1px solid var(--border)}
+    .char-count{font-size:.85rem;color:var(--muted);margin-left:auto}
+
+    /* Inputs & Buttons */
+    .input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;color:var(--text);font-family:var(--font-body);font-size:.95rem;outline:none;transition:border-color .15s;display:block}
+    .input:focus{border-color:var(--primary)}
+    .input::placeholder{color:var(--muted)}
+    .input-sm{padding:.5rem .75rem;font-size:.875rem}
+    .btn{padding:.75rem 1.5rem;border:none;border-radius:50px;cursor:pointer;font-family:var(--font-body);font-size:.95rem;font-weight:600;transition:background .15s,opacity .15s,transform .1s}
+    .btn:active{transform:scale(.97)}
+    .btn-primary{background:var(--primary);color:#000}
+    .btn-primary:hover{background:var(--primary-h)}
+    .btn-outline{background:none;border:2px solid var(--border);color:var(--text)}
+    .btn-outline:hover{border-color:var(--text)}
+    .btn-danger{background:rgba(255,107,107,.15);color:var(--like);border:1px solid rgba(255,107,107,.3)}
+    .btn-danger:hover{background:rgba(255,107,107,.25)}
+    .btn-sm{padding:.45rem 1rem;font-size:.85rem}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+
+    .hidden{display:none!important}
+    .loading-pulse{padding:2rem;text-align:center;color:var(--muted);animation:pulse 1.5s ease infinite}
+    @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+    .empty-state{padding:2.5rem;text-align:center;color:var(--muted)}
+
+    /* Responsive */
+    @media(max-width:1000px){.admin-stats{grid-template-columns:1fr 1fr}}
+    @media(max-width:900px){
+      .layout{grid-template-columns:60px 1fr}
+      .right-panel{display:none}
+      .sidebar-logo span,.nav-item span,.chirp-btn,.sidebar-user .user-name,.sidebar-user .user-handle{display:none}
+      .nav-item{padding:.75rem;justify-content:center}
+      .sidebar-logo{padding:.5rem;text-align:center}
+      .chirp-btn{padding:.75rem;font-size:1.2rem}
+      .sidebar-user{padding:.5rem;justify-content:center}
+      .signout-btn{margin-left:0}
+    }
+    @media(max-width:600px){
+      .layout{grid-template-columns:1fr}
+      .sidebar{position:fixed;bottom:0;left:0;right:0;top:auto;height:auto;flex-direction:row;justify-content:space-around;border-right:none;border-top:1px solid var(--border);padding:.5rem;background:var(--bg);z-index:50}
+      .sidebar-logo,.chirp-btn,.sidebar-user{display:none}
+      .sidebar-nav{flex-direction:row;gap:0}
+      .dm-layout{grid-template-columns:1fr}
+      .dm-sidebar{display:none}
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#6b7592;font-family:sans-serif">Loading Chirp...</div>
+  </div>
+</body>
+</html>
